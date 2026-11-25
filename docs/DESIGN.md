@@ -111,6 +111,32 @@ opens its own public connection.  This matches how recorders already wake
 the uploader through a local datagram socket: a lost datagram loses one
 row, never the link.
 
+## The magnetometer page: gmag-webui's public build
+
+gmag-webui already draws the magnetometer in the browser: live plots,
+baseline, rotation, moving average, export, `.log` upload.  Its small Deno
+server only serves the files and relays mag-usb's local feed at `/ws`.
+Under this design the relay takes over the feed and the project site
+serves the page, so the same interface goes public without opening any
+station.
+
+- **Feed.**  mag-recorder declares a `mag` feed (`kind = "series"`,
+  `rate_hz = 1`) and sends each mag-usb sample, about 100 bytes, to
+  live-publisher's socket.  mag-usb stays bound to the station's
+  loopback.  Before a sample leaves, mag-recorder removes any precise
+  position it carries (policy rule 6); to confirm against mag-usb's
+  message format.
+- **Page.**  A second build target of the gmag-webui repository, not a
+  fork: one HTML file of about 150 KB, with Plotly and mqtt.js from a
+  pinned CDN instead of the 14 MB vendored copies, so it fits a Sites
+  embed.  It adds a "relay" source type and a station picker filled from
+  the relay's station list.  Every analysis feature runs in the viewer's
+  browser and costs the station nothing.
+- **Local dashboard.**  Operators keep the full gmag-webui on their own
+  network, as now.  Fixes land once and reach both builds.
+- **Cost.**  One row a second per station; about 0.4 MB of backlog per
+  station on the relay.
+
 ## The link
 
 - **Outbound only.**  The station opens `wss://<relay>/live/ingest`
@@ -207,16 +233,19 @@ see "paused" rather than a frozen screen.
 4. Server: the relay into wsprdaemon-server; registry instead of the
    hand-kept file.
 5. SIGMA moves from the hand-started prototype onto the client.
-6. Two stations with room to spare and willing operators; then the
-   release that offers it fleet-wide.
+6. The `mag` feed in mag-recorder, and gmag-webui's public build (relay
+   source, station picker, CDN libraries, one-file build).
+7. Two stations with room to spare and willing operators, one of them
+   with a magnetometer; then the release that offers it fleet-wide.
 
 ## Open questions
 
 1. **Rob:** how should the relay read the upload registry: a file the
    registrar exports, a query, or something else?  And may the relay
    live in wsprdaemon-server?
-2. **Both:** should the magnetometer feed come in the first release, or
-   wait until the spectrum feed has run fleet-wide?
+2. **Both:** the magnetometer can join the first release if gmag-webui's
+   changes stay as small as they look.  Agree?  And who in gmag-webui's
+   project should review its public build?
 3. **Both:** which page hosts the public view: the project site alone, or
    also each station's own station-web page?
 4. **Phil:** worth knowing for radiod: a spectrum channel whose sample
