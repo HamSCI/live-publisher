@@ -262,6 +262,16 @@ class RelayHello(unittest.TestCase):
             await asyncio.gather(*slow, t)
             self.assertEqual(dict(relay.pending), {})       # timeouts release their count
             self.assertEqual(relay.verifying._value, lr.MAX_VERIFY)   # no slot held
+            # a full ceiling refuses strangers but not an address that signed in before
+            relay.pending.update({"192.0.2.%d" % i: 1 for i in range(lr.MAX_PENDING)})
+            relay.known["198.51.100.7"] = True
+            stranger, station = FakeWS("203.0.113.50"), FakeWS("198.51.100.7")
+            await relay.route(stranger)
+            self.assertEqual(stranger.closed, 1013)
+            t = asyncio.create_task(relay.route(station))
+            await asyncio.sleep(0.01)
+            self.assertIsNone(station.closed)
+            await t
         saved = lr.HELLO_SECONDS
         try:
             asyncio.run(run())

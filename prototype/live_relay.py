@@ -54,7 +54,9 @@ VERIFY_WAIT = 5
 HELLO_SECONDS = 5            # a station signs its nonce in well under a second
 MAX_PENDING_PER_ADDR = 2     # sign-ins in flight from one address (nginx overwrites
                              # X-Forwarded-For with $remote_addr, so a client cannot choose it)
-MAX_PENDING = 64             # sign-ins in flight from all addresses together
+MAX_PENDING = 64             # sign-ins in flight from all addresses together; an address
+                             # that has signed in before skips this ceiling (not its own cap)
+MAX_KNOWN = 1024
 SIG_NAMESPACE = "live-stream"
 ALLOWED_SIGNERS = "/etc/live-relay/allowed_signers"
 
@@ -122,6 +124,7 @@ class Relay:
         self.clients = 0
         self.verifying = asyncio.Semaphore(MAX_VERIFY)
         self.pending = collections.Counter()     # address -> sign-ins in flight
+        self.known = collections.OrderedDict()   # addresses that signed in, oldest first
         self.allowed = allowed
 
     def verify(self, name, nonce, sig):
@@ -162,6 +165,10 @@ class Relay:
                     del self.pending[addr]
             if not ok:
                 raise ValueError("%s: signature refused" % name)
+            self.known[addr] = True
+            self.known.move_to_end(addr)
+            while len(self.known) > MAX_KNOWN:
+                self.known.popitem(last=False)
             st = self.stations.get(name)
             if st is None:
                 if len(self.stations) >= MAX_STATIONS:
@@ -198,7 +205,7 @@ class Relay:
         if path.endswith("/ingest"):
             addr = ws.request.headers.get("X-Forwarded-For", "local")
             if (self.pending[addr] >= MAX_PENDING_PER_ADDR
-                    or sum(self.pending.values()) >= MAX_PENDING):
+                    or (addr not in self.known and sum(self.pending.values()) >= MAX_PENDING)):
                 await ws.close(1013, "busy")
                 return
             await self.on_station(ws, addr)
