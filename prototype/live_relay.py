@@ -47,6 +47,9 @@ MAX_STREAMS = 32
 MAX_CLIENTS = 300
 CLIENT_QUEUE = 2000          # rows; a viewer further behind than this gets dropped
 STALE_SECONDS = 120
+MAX_AHEAD = 30               # s: a row stamped further ahead than this is refused
+MAX_ROWS = 40 * BACKLOG_SECONDS   # per stream: a hard cap whatever the stamps say
+MAX_PENDING_INGEST = 16      # sign-ins in flight; the rest get 1013 "busy"
 SIG_NAMESPACE = "live-stream"
 ALLOWED_SIGNERS = "/etc/live-relay/allowed_signers"
 
@@ -60,14 +63,19 @@ class Station:
         self.viewers = set()
         self.grid = ""
 
-    def add(self, d, frame):
+    def add(self, d, frame, now=None):
+        """Keep the row unless its stamp lies ahead of the relay's clock or behind the
+        backlog.  The relay's clock, not the station's stamps, decides what ages out."""
+        now = time.time() if now is None else now
+        if not now - BACKLOG_SECONDS <= d["t"] <= now + MAX_AHEAD:
+            return False
         q = self.streams.get(d["name"])
         if q is None:
             if len(self.streams) >= MAX_STREAMS:
                 return False
-            q = self.streams[d["name"]] = collections.deque()
+            q = self.streams[d["name"]] = collections.deque(maxlen=MAX_ROWS)
         q.append((d["t"], d["kind"], frame))
-        while q and q[0][0] < d["t"] - BACKLOG_SECONDS:
+        while q and q[0][0] < now - BACKLOG_SECONDS:
             q.popleft()
         self.last = time.time()
         return True
@@ -107,6 +115,7 @@ class Relay:
     def __init__(self, allowed=ALLOWED_SIGNERS):
         self.stations = {}
         self.clients = 0
+        self.ingest = asyncio.Semaphore(MAX_PENDING_INGEST)
         self.allowed = allowed
 
     def verify(self, name, nonce, sig):
@@ -123,14 +132,15 @@ class Relay:
         nonce = secrets.token_hex(16)
         name = None
         try:
-            await ws.send(json.dumps({"nonce": nonce}))
-            m = json.loads(await asyncio.wait_for(ws.recv(), 15))
-            name, sig = m.get("station", ""), m.get("sig", "")
-            if not (isinstance(name, str) and frames.NAME_RE.match(name.encode())
-                    and isinstance(sig, str) and len(sig) < 4096):
-                raise ValueError("bad hello")
-            if not await asyncio.to_thread(self.verify, name, nonce, sig):
-                raise ValueError("%s: signature refused" % name)
+            async with self.ingest:      # only the sign-in counts against the cap
+                await ws.send(json.dumps({"nonce": nonce}))
+                m = json.loads(await asyncio.wait_for(ws.recv(), 15))
+                name, sig = m.get("station", ""), m.get("sig", "")
+                if not (isinstance(name, str) and frames.NAME_RE.match(name.encode())
+                        and isinstance(sig, str) and len(sig) < 4096):
+                    raise ValueError("bad hello")
+                if not await asyncio.to_thread(self.verify, name, nonce, sig):
+                    raise ValueError("%s: signature refused" % name)
             st = self.stations.get(name)
             if st is None:
                 if len(self.stations) >= MAX_STATIONS:
@@ -165,6 +175,9 @@ class Relay:
     async def route(self, ws):
         path = urlsplit(ws.request.path).path.rstrip("/")
         if path.endswith("/ingest"):
+            if self.ingest.locked():
+                await ws.close(1013, "busy")
+                return
             await self.on_station(ws)
         else:
             await self.on_viewer(ws)
@@ -180,6 +193,7 @@ class Relay:
             return
         self.clients += 1
         viewer = Viewer(ws)
+        sender = None
         try:
             q = parse_qs(urlsplit(ws.request.path).query)
             await ws.send(self.hello())
@@ -200,10 +214,11 @@ class Relay:
                         await self.watch(viewer, want)
                     elif viewer.station is not None:
                         await viewer.station.tell()
-            sender.cancel()
         except ConnectionClosed:
             pass
         finally:
+            if sender is not None:
+                sender.cancel()
             await self.watch(viewer, "")
             self.clients -= 1
 

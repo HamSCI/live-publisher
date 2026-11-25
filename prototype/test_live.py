@@ -213,13 +213,27 @@ class RelayHello(unittest.TestCase):
         for bad in ("EM38ww12", "39.1,-94.5", "", None, "ZZ99zz"):
             self.assertEqual(lr.grid6(bad), "")
 
+    def test_rows_age_by_the_relay_clock_not_the_stamp(self):
+        import live_relay as lr
+        st = lr.Station("AC0G-S")
+        row = lambda t: frames.encode_series("mag", t, [1.0])
+        now = 1_000_000.0
+        self.assertFalse(st.add(frames.decode(row(now + 3600)), row(now + 3600), now=now))
+        self.assertFalse(st.add(frames.decode(row(now - 3600)), row(now - 3600), now=now))
+        for i in range(5):
+            self.assertTrue(st.add(frames.decode(row(now - 590 + i)), row(now - 590 + i), now=now))
+        later = now + 30
+        st.add(frames.decode(row(later)), row(later), now=later)
+        self.assertEqual(len(st.streams["mag"]), 1)      # the five aged out by the relay's clock
+        self.assertEqual(st.streams["mag"].maxlen, lr.MAX_ROWS)
+
     def test_feeds_name_series_streams(self):
         import live_relay as lr
         st = lr.Station("AC0G-S")
         for kind, name in ((frames.DOPPLER, "WWV10"), (frames.SERIES, "mag")):
             buf = (frames.encode_series(name, 100.0, [1.0]) if kind == frames.SERIES
                    else frames.encode(kind, name, 100.0, 0, 1, [1.0]))
-            st.add(frames.decode(buf), buf)
+            st.add(frames.decode(buf), buf, now=100.0)
         self.assertEqual(st.feeds(), ["doppler", "mag"])
         self.assertIn("grid", st.summary())
 
