@@ -261,6 +261,7 @@ class RelayHello(unittest.TestCase):
             self.assertIsNone(other.closed)
             await asyncio.gather(*slow, t)
             self.assertEqual(dict(relay.pending), {})       # timeouts release their count
+            self.assertEqual(relay.verifying._value, lr.MAX_VERIFY)   # no slot held
         saved = lr.HELLO_SECONDS
         try:
             asyncio.run(run())

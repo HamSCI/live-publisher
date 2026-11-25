@@ -52,7 +52,9 @@ MAX_ROWS = 40 * BACKLOG_SECONDS   # per stream: a hard cap whatever the stamps s
 MAX_VERIFY = 8               # signature checks at once; a sign-in waits up to VERIFY_WAIT
 VERIFY_WAIT = 5
 HELLO_SECONDS = 5            # a station signs its nonce in well under a second
-MAX_PENDING_PER_ADDR = 2     # sign-ins in flight from one address (nginx sets X-Forwarded-For)
+MAX_PENDING_PER_ADDR = 2     # sign-ins in flight from one address (nginx overwrites
+                             # X-Forwarded-For with $remote_addr, so a client cannot choose it)
+MAX_PENDING = 64             # sign-ins in flight from all addresses together
 SIG_NAMESPACE = "live-stream"
 ALLOWED_SIGNERS = "/etc/live-relay/allowed_signers"
 
@@ -145,11 +147,15 @@ class Relay:
                         and isinstance(sig, str) and len(sig) < 4096):
                     raise ValueError("bad hello")
                 # only the ssh-keygen check, the costly step, counts against the global cap
-                await asyncio.wait_for(self.verifying.acquire(), VERIFY_WAIT)
+                acquired = False
                 try:
+                    async with asyncio.timeout(VERIFY_WAIT):
+                        await self.verifying.acquire()
+                    acquired = True
                     ok = await asyncio.to_thread(self.verify, name, nonce, sig)
                 finally:
-                    self.verifying.release()
+                    if acquired:
+                        self.verifying.release()
             finally:
                 self.pending[addr] -= 1
                 if self.pending[addr] <= 0:
@@ -191,7 +197,8 @@ class Relay:
         path = urlsplit(ws.request.path).path.rstrip("/")
         if path.endswith("/ingest"):
             addr = ws.request.headers.get("X-Forwarded-For", "local")
-            if self.pending[addr] >= MAX_PENDING_PER_ADDR:
+            if (self.pending[addr] >= MAX_PENDING_PER_ADDR
+                    or sum(self.pending.values()) >= MAX_PENDING):
                 await ws.close(1013, "busy")
                 return
             await self.on_station(ws, addr)
