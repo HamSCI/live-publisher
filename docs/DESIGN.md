@@ -153,6 +153,8 @@ station.
   header (magic `LS`, version, kind, time, first frequency, bin width,
   floor and step in dB), the feed name, then one byte per bin in 0.5 dB
   steps.  Sixteen streams at one row a second come to about 10 KB/s.
+  A series row (kind 2, such as the magnetometer's) carries its values as
+  float32 instead, at most sixteen: `mag` sends x, y, z and rt.
 
 ## Registration: one key, two scopes
 
@@ -224,9 +226,9 @@ see "paused" rather than a frozen screen.
 
 ## From prototype to client
 
-1. Move `frames.py`, the spectrum feed and the link from
-   `~/hamsci/tasks/live-stream/` into this repository; drop numpy, which
-   the spectrum path no longer needs; carry the 18 tests over.
+1. Done 2026-11-25: the prototype lives in `prototype/` with its 24
+   tests, the series frame and the feed socket.  Still to do in step 2:
+   drop numpy from the spectrum path.
 2. Add `install.sh`, `deploy.toml`, the unit and the contract verbs.
 3. Sigmond: catalog entry, site-profile opt-in, limits, CPU-affinity
    entry, pause file, "live" scope at registration.
@@ -234,7 +236,9 @@ see "paused" rather than a frozen screen.
    hand-kept file.
 5. SIGMA moves from the hand-started prototype onto the client.
 6. The `mag` feed in mag-recorder, and gmag-webui's public build (relay
-   source, station picker, CDN libraries, one-file build).
+   source, station picker, CDN libraries, one-file build).  The feed
+   shipped in mag-recorder f7b6f8e and runs on SIGMA; gmag-webui's public
+   build waits on its maintainers' review.
 7. Two stations with room to spare and willing operators, one of them
    with a magnetometer; then the release that offers it fleet-wide.
 

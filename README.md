@@ -10,4 +10,6 @@ each feed on.
 - Policy it follows: sigmond's
   [public data policy](https://github.com/HamSCI/sigmond/blob/main/docs/public-data-policy.md)
 
-Status: design under review.  A prototype runs on AC0G-S.
+Status: design under review.  The prototype in [prototype/](prototype/)
+runs on AC0G-S and the relay on wd30; it carries SIGMA's Doppler strips,
+band waterfalls and magnetometer.
