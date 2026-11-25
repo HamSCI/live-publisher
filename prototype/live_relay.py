@@ -49,7 +49,10 @@ CLIENT_QUEUE = 2000          # rows; a viewer further behind than this gets drop
 STALE_SECONDS = 120
 MAX_AHEAD = 30               # s: a row stamped further ahead than this is refused
 MAX_ROWS = 40 * BACKLOG_SECONDS   # per stream: a hard cap whatever the stamps say
-MAX_PENDING_INGEST = 16      # sign-ins in flight; the rest get 1013 "busy"
+MAX_VERIFY = 8               # signature checks at once; a sign-in waits up to VERIFY_WAIT
+VERIFY_WAIT = 5
+HELLO_SECONDS = 5            # a station signs its nonce in well under a second
+MAX_PENDING_PER_ADDR = 2     # sign-ins in flight from one address (nginx sets X-Forwarded-For)
 SIG_NAMESPACE = "live-stream"
 ALLOWED_SIGNERS = "/etc/live-relay/allowed_signers"
 
@@ -115,7 +118,8 @@ class Relay:
     def __init__(self, allowed=ALLOWED_SIGNERS):
         self.stations = {}
         self.clients = 0
-        self.ingest = asyncio.Semaphore(MAX_PENDING_INGEST)
+        self.verifying = asyncio.Semaphore(MAX_VERIFY)
+        self.pending = collections.Counter()     # address -> sign-ins in flight
         self.allowed = allowed
 
     def verify(self, name, nonce, sig):
@@ -128,19 +132,30 @@ class Relay:
                                input=nonce.encode(), capture_output=True, timeout=10)
         return p.returncode == 0
 
-    async def on_station(self, ws):
+    async def on_station(self, ws, addr="local"):
         nonce = secrets.token_hex(16)
         name = None
         try:
-            async with self.ingest:      # only the sign-in counts against the cap
+            self.pending[addr] += 1
+            try:
                 await ws.send(json.dumps({"nonce": nonce}))
-                m = json.loads(await asyncio.wait_for(ws.recv(), 15))
+                m = json.loads(await asyncio.wait_for(ws.recv(), HELLO_SECONDS))
                 name, sig = m.get("station", ""), m.get("sig", "")
                 if not (isinstance(name, str) and frames.NAME_RE.match(name.encode())
                         and isinstance(sig, str) and len(sig) < 4096):
                     raise ValueError("bad hello")
-                if not await asyncio.to_thread(self.verify, name, nonce, sig):
-                    raise ValueError("%s: signature refused" % name)
+                # only the ssh-keygen check, the costly step, counts against the global cap
+                await asyncio.wait_for(self.verifying.acquire(), VERIFY_WAIT)
+                try:
+                    ok = await asyncio.to_thread(self.verify, name, nonce, sig)
+                finally:
+                    self.verifying.release()
+            finally:
+                self.pending[addr] -= 1
+                if self.pending[addr] <= 0:
+                    del self.pending[addr]
+            if not ok:
+                raise ValueError("%s: signature refused" % name)
             st = self.stations.get(name)
             if st is None:
                 if len(self.stations) >= MAX_STATIONS:
@@ -153,7 +168,7 @@ class Relay:
             st.grid = grid6(m.get("grid"))
             await ws.send(json.dumps({"ok": True}))
             await st.tell()
-            log.info("%s: linked from %s", name, ws.request.headers.get("X-Forwarded-For", "local"))
+            log.info("%s: linked from %s", name, addr)
             async for buf in ws:
                 if not isinstance(buf, bytes):
                     continue
@@ -175,10 +190,11 @@ class Relay:
     async def route(self, ws):
         path = urlsplit(ws.request.path).path.rstrip("/")
         if path.endswith("/ingest"):
-            if self.ingest.locked():
+            addr = ws.request.headers.get("X-Forwarded-For", "local")
+            if self.pending[addr] >= MAX_PENDING_PER_ADDR:
                 await ws.close(1013, "busy")
                 return
-            await self.on_station(ws)
+            await self.on_station(ws, addr)
         else:
             await self.on_viewer(ws)
 

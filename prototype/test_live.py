@@ -227,6 +227,46 @@ class RelayHello(unittest.TestCase):
         self.assertEqual(len(st.streams["mag"]), 1)      # the five aged out by the relay's clock
         self.assertEqual(st.streams["mag"].maxlen, lr.MAX_ROWS)
 
+    def test_sign_ins_per_address_are_capped_and_released(self):
+        import asyncio
+        import live_relay as lr
+
+        class Req:
+            def __init__(self, addr):
+                self.path, self.headers = "/live/ingest", {"X-Forwarded-For": addr}
+
+        class FakeWS:
+            def __init__(self, addr):
+                self.request, self.closed = Req(addr), None
+
+            async def send(self, m):
+                pass
+
+            async def recv(self):
+                await asyncio.sleep(3600)        # never answers the nonce
+
+            async def close(self, code, reason=""):
+                self.closed = code
+
+        async def run():
+            relay = lr.Relay(allowed="/nonexistent")
+            lr.HELLO_SECONDS = 0.05
+            slow = [asyncio.create_task(relay.route(FakeWS("203.0.113.9"))) for _ in range(2)]
+            await asyncio.sleep(0.01)
+            third, other = FakeWS("203.0.113.9"), FakeWS("198.51.100.7")
+            await relay.route(third)
+            self.assertEqual(third.closed, 1013)            # this address has two pending
+            t = asyncio.create_task(relay.route(other))     # another address still gets in
+            await asyncio.sleep(0.01)
+            self.assertIsNone(other.closed)
+            await asyncio.gather(*slow, t)
+            self.assertEqual(dict(relay.pending), {})       # timeouts release their count
+        saved = lr.HELLO_SECONDS
+        try:
+            asyncio.run(run())
+        finally:
+            lr.HELLO_SECONDS = saved
+
     def test_feeds_name_series_streams(self):
         import live_relay as lr
         st = lr.Station("AC0G-S")
