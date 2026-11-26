@@ -45,7 +45,7 @@ select { font: inherit; color: var(--ink); background: var(--surface);
 .plot { background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
 canvas { display: block; width: 100%; image-rendering: pixelated; }
 .dop canvas { height: 84px; }
-.band canvas { height: 180px; }
+.band canvas { height: 300px; }
 .axis { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px;
   font-variant-numeric: tabular-nums; padding-top: 1px; }
 #tip { position: fixed; pointer-events: none; background: var(--surface); color: var(--ink);
@@ -70,13 +70,15 @@ canvas { display: block; width: 100%; image-rendering: pixelated; }
   <p class="sub">WWV and WWVH, ±5 Hz in 0.1 Hz bins, +5 Hz at the top.  Time runs left to right over ten minutes; the right edge is now.</p>
   <div id="dop" class="grid dop"></div>
 
-  <h2>Ham bands</h2>
-  <p class="sub">Frequency runs left to right.  The top row is now; older rows scroll down over ten minutes.</p>
-  <div id="bands" class="grid band"></div>
+  <h2>Ham band <select id="band" aria-label="Ham band"></select></h2>
+  <p class="sub">One band at a time.  Frequency runs left to right.  The top row is now; older rows scroll down over ten minutes.</p>
+  <div id="bands" class="band"></div>
+  <p class="sub" id="bandnote"></p>
 
   <p class="note">Colour scales to each panel's own recent range, so it shows shape, not absolute level.
     Hover a panel for frequency, time and level (dB relative to the receiver's full scale).
-    A station streams its bands only while someone has this page open, so band history starts when the first viewer arrives.</p>
+    A station streams a band only while someone watches it, so its history starts when you pick it.
+    A station runs one band at a time; when two viewers pick different bands, the band more of them watch wins.</p>
 </main>
 <div id="tip"></div>
 <script>
@@ -87,10 +89,12 @@ const CARRIERS = [["wwv2_5", "2.5 MHz"], ["wwv5", "5 MHz"], ["wwv10", "10 MHz"],
 const BANDS = [["160m", 1.8, 2.0], ["80m", 3.5, 4.0], ["60m", 5.33, 5.41], ["40m", 7.0, 7.3],
                ["30m", 10.1, 10.15], ["20m", 14.0, 14.35], ["17m", 18.068, 18.168],
                ["15m", 21.0, 21.45], ["12m", 24.89, 24.99], ["10m", 28.0, 29.7]];
+const BAND_KIND = 1;                    // frames.BAND
 const params = new URLSearchParams(location.search);
 const RELAY = params.get("relay") || "wss://wd30.wsprdaemon.org/live/";
 
 let ws = null, backoff = 1000, current = params.get("station") || "";
+let band = BANDS.some(b => b[0] === params.get("band")) ? params.get("band") : "20m";
 const streams = new Map();              // name -> {rows: [], lo, hi, dirty}
 const panels = new Map();               // name -> {cv, horizontal, axis}
 let lastRow = 0;
@@ -127,6 +131,7 @@ function decode(buf) {
 }
 
 function addRow(r) {
+  if (r.kind === BAND_KIND && r.name !== band) return;     // rows for a band another viewer picked
   let s = streams.get(r.name);
   if (!s) { s = {rows: [], lo: null, hi: null, dirty: true}; streams.set(r.name, s); }
   s.rows.push(r);
@@ -164,12 +169,18 @@ function buildPanels() {
     const axis = cell(dop, n, label, "±5 Hz", SPAN, 101, true);
     axis.innerHTML = "<span>−10 min</span><span>−5 min</span><span>now</span>";
   }
-  const bands = document.getElementById("bands");
-  for (const [n, lo, hi] of BANDS) {
-    const axis = cell(bands, n, n.replace("m", " m"), lo.toFixed(3) + "–" + hi.toFixed(3) + " MHz",
-                      1000, SPAN, false);
-    axis.innerHTML = `<span>${lo.toFixed(3)}</span><span>${((lo + hi) / 2).toFixed(3)}</span><span>${hi.toFixed(3)} MHz</span>`;
-  }
+  buildBand();
+}
+
+function buildBand() {
+  const box = document.getElementById("bands");
+  for (const [n] of BANDS) panels.delete(n);
+  box.textContent = "";
+  const [n, lo, hi] = BANDS.find(b => b[0] === band);
+  const axis = cell(box, n, n.replace("m", " m"), lo.toFixed(3) + "–" + hi.toFixed(3) + " MHz",
+                    1000, SPAN, false);
+  axis.innerHTML = `<span>${lo.toFixed(3)}</span><span>${((lo + hi) / 2).toFixed(3)}</span><span>${hi.toFixed(3)} MHz</span>`;
+  paint(n);
 }
 
 function paint(name) {
@@ -215,6 +226,10 @@ function tick() {
   document.getElementById("status").innerHTML = '<span class="dot' + (live ? ' live' : '') + '"></span>' +
     (!lastRow ? (ws && ws.readyState === 1 ? "waiting for rows" : "connecting") :
      live ? "live, last row " + Math.max(0, age).toFixed(0) + " s ago" : "no rows for " + fmtAge(age));
+  const b = streams.get(band), bAge = b && b.rows.length ? Date.now() / 1000 - b.rows[b.rows.length - 1].t : Infinity;
+  document.getElementById("bandnote").textContent = !live || bAge < 10 ? "" :
+    "No " + band.replace("m", " m") + " rows yet.  The station starts a band within a few seconds; " +
+    "if none come, another viewer may hold the station's one band, or this station shows no bands.";
 }
 
 // ---- hover ----
@@ -254,10 +269,25 @@ const fmtAge = a => a < 120 ? a.toFixed(0) + " s" : a < 7200 ? (a / 60).toFixed(
 const sel = document.getElementById("station");
 function reset() { streams.clear(); lastRow = 0; for (const n of panels.keys()) paint(n); }
 sel.onchange = () => { current = sel.value; reset();
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({station: current, band: "all"})); };
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({station: current, band})); };
+
+const bsel = document.getElementById("band");
+for (const [n, lo, hi] of BANDS) {
+  const o = document.createElement("option");
+  o.value = n; o.textContent = n.replace("m", " m") + "  " + lo.toFixed(3) + "–" + hi.toFixed(3) + " MHz";
+  bsel.appendChild(o);
+}
+bsel.value = band;
+bsel.onchange = () => {
+  band = bsel.value; buildBand(); reset();
+  const u = new URL(location.href); u.searchParams.set("band", band); history.replaceState(null, "", u);
+  // naming the station again makes the relay resend its ten minutes, now with this band's rows
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({station: current, band}));
+};
 
 function connect() {
-  ws = new WebSocket(RELAY + "?band=all" + (current ? "&station=" + encodeURIComponent(current) : ""));
+  ws = new WebSocket(RELAY + "?band=" + encodeURIComponent(band) +
+                    (current ? "&station=" + encodeURIComponent(current) : ""));
   ws.binaryType = "arraybuffer";
   ws.onopen = () => { backoff = 1000; reset(); };       // the relay resends the backlog
   ws.onmessage = e => {
@@ -274,7 +304,7 @@ function connect() {
       }
       if (!current && names.length) {
         current = names.find(n => info[n].live) || names[0];
-        ws.send(JSON.stringify({station: current, band: "all"}));
+        ws.send(JSON.stringify({station: current, band}));
       }
       sel.value = current;
       return;

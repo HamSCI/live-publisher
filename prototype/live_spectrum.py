@@ -43,8 +43,9 @@ BANDS = (("160m", 1_800_000, 2_000_000), ("80m", 3_500_000, 4_000_000),
          ("17m", 18_068_000, 18_168_000), ("15m", 21_000_000, 21_450_000),
          ("12m", 24_890_000, 24_990_000), ("10m", 28_000_000, 29_700_000))
 BAND_BINS = 1024             # at most
-MAX_BANDS = 10               # at once: all of them.  SIGMA, 11-25: ten bands at these widths
-                             # add about 21 % of a core to radiod while anyone watches
+MAX_BANDS = 1                # at once, unless --max-bands says more.  SIGMA, 11-25: with ten
+                             # bands on, hf-timestd lost 1,000-10,000 samples an hour to
+                             # radiod's zero fill, and none in the hours without them
 BAND_LINGER = 30             # seconds a band runs on after its last viewer leaves
 # Bin widths a band may use.  Above radiod's 200 Hz crossover a spectrum channel takes one
 # FFT of the raw input per poll, of samprate / width points; at or below it radiod runs a
@@ -335,6 +336,11 @@ def start_doppler_spectrum(ctl, hub, emit):
     return streams
 
 
+def band_cap(n):
+    """--max-bands, held between one band and all of them."""
+    return max(1, min(int(n), len(BANDS)))
+
+
 def band_grid(lo, hi):
     """(bin width, bin count) for a band: the narrowest BAND_RBWS width that covers it in
     BAND_BINS bins or fewer."""
@@ -344,9 +350,9 @@ def band_grid(lo, hi):
 
 class Bands:
     """Band waterfalls on demand.  The relay sends {"bands": [...]}, the bands someone is
-    watching; this keeps a radiod spectrum channel for each, at most MAX_BANDS, and drops
-    one BAND_LINGER seconds after the last viewer leaves.  Ten bands at once cost SIGMA's
-    radiod about 70 % of a core (11-25); one or two cost a fraction of that."""
+    watching, most-watched first; this keeps a radiod spectrum channel for each, at most
+    MAX_BANDS, and drops one BAND_LINGER seconds after the last viewer leaves.  The page
+    asks for one band, so with the cap at 1 the band most viewers watch wins."""
 
     def __init__(self, ctl, emit, allowed=None, hub=None):
         self.ctl, self.emit, self.hub = ctl, emit, hub
@@ -455,6 +461,7 @@ class FeedSocket:
 
 
 def main(argv=None):
+    global MAX_BANDS
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--status", required=True, help="radiod status name, e.g. sigma-status.local")
     p.add_argument("--station", required=True, help="the name the relay knows this station by")
@@ -465,11 +472,14 @@ def main(argv=None):
                    help="a series feed the operator turned on (repeat), e.g. mag")
     p.add_argument("--feed-socket", default="/run/live-publisher/feeds.sock")
     p.add_argument("--no-bands", action="store_true")
+    p.add_argument("--max-bands", type=int, default=MAX_BANDS,
+                   help="band waterfalls at once (default %(default)s)")
     p.add_argument("--no-doppler", action="store_true")
     p.add_argument("--doppler", choices=("spectrum", "iq"), default="spectrum",
                    help="spectrum: radiod narrow spectrum channels (default); iq: decode "
                         "hf-timestd's IQ streams here (costs this process far more CPU)")
     a = p.parse_args(argv)
+    MAX_BANDS = band_cap(a.max_bands)
     logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                         format="%(asctime)s %(levelname)s %(message)s")
     bands = None

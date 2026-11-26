@@ -104,8 +104,11 @@ class Bands(unittest.TestCase):
         ls.time.monotonic = self._mono
         ls.MAX_BANDS = self._cap
 
-    def test_shipped_cap_is_every_band(self):
-        self.assertEqual(self._cap, len(ls.BANDS))
+    def test_shipped_cap_is_one_band(self):
+        self.assertEqual(self._cap, 1)
+
+    def test_max_bands_flag_is_held_between_one_and_all(self):
+        self.assertEqual([ls.band_cap(n) for n in (3, 0, -2, 99)], [3, 1, 1, len(ls.BANDS)])
 
     def test_all_means_every_band(self):
         ls.MAX_BANDS = len(ls.BANDS)
